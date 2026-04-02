@@ -10,11 +10,11 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"log/syslog"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"regexp"
@@ -70,16 +70,6 @@ To register it once, run:
 
 	h := newHost(os.Stdin, os.Stdout)
 
-	if w, err := syslog.Dial("tcp", "localhost:5555", syslog.LOG_INFO, "browser"); err == nil {
-		log.Printf("syslog dialed")
-		h.logf = func(f string, a ...any) {
-			fmt.Fprintf(w, f, a...)
-		}
-		log.SetOutput(w)
-	} else {
-		log.Printf("syslog: %v", err)
-	}
-
 	ln := h.getProxyListener()
 	port := ln.Addr().(*net.TCPAddr).Port
 	h.logf("Proxy listening on localhost:%v", port)
@@ -112,6 +102,13 @@ func getTargetDir(browserByte string) (string, error) {
 		} else if browserByte == "F" {
 			dir = filepath.Join(home, "Library", "Application Support", "Mozilla", "NativeMessagingHosts")
 		}
+	case "windows":
+		if browserByte == "C" {
+			// Chrome on Windows requires a registry entry; store the manifest here.
+			dir = filepath.Join(os.Getenv("APPDATA"), "Tailscale", "ts-browser-ext", "chrome")
+		} else if browserByte == "F" {
+			dir = filepath.Join(os.Getenv("APPDATA"), "Mozilla", "NativeMessagingHosts")
+		}
 	default:
 		return "", fmt.Errorf("TODO: implement support for installing on %q", runtime.GOOS)
 	}
@@ -128,6 +125,9 @@ func uninstall() error {
 			return err
 		}
 		targetBin := filepath.Join(targetDir, "ts-browser-ext")
+		if runtime.GOOS == "windows" {
+			targetBin += ".exe"
+		}
 		targetJSON := filepath.Join(targetDir, "com.tailscale.browserext.chrome.json")
 		if browserByte == "F" {
 			targetJSON = filepath.Join(targetDir, "com.tailscale.browserext.firefox.json")
@@ -137,6 +137,10 @@ func uninstall() error {
 		}
 		if err := os.Remove(targetJSON); err != nil && !os.IsNotExist(err) {
 			return err
+		}
+		if runtime.GOOS == "windows" && browserByte == "C" {
+			const regKey = `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.tailscale.browserext.chrome`
+			exec.Command("reg", "delete", regKey, "/f").Run() // ignore error if already absent
 		}
 	}
 	return nil
@@ -168,11 +172,21 @@ func install(installArg string) error {
 		return err
 	}
 	targetBin := filepath.Join(targetDir, "ts-browser-ext")
+	if runtime.GOOS == "windows" {
+		targetBin += ".exe"
+	}
 	if err := os.WriteFile(targetBin, binary, 0755); err != nil {
 		return err
 	}
 	log.SetFlags(0)
 	log.Printf("copied binary to %v", targetBin)
+
+	// Escape the binary path for embedding in a JSON string value.
+	jsonPathBytes, err := json.Marshal(targetBin)
+	if err != nil {
+		return err
+	}
+	jsonPath := string(jsonPathBytes) // includes surrounding quotes
 
 	var targetJSON string
 	var jsonConf []byte
@@ -183,23 +197,23 @@ func install(installArg string) error {
 		jsonConf = fmt.Appendf(nil, `{
 		"name": "com.tailscale.browserext.chrome",
 		"description": "Tailscale Browser Extension",
-		"path": "%s",
+		"path": %s,
 		"type": "stdio",
 		"allowed_origins": [
 			"chrome-extension://%s/"
 		]
-	  }`, targetBin, extension)
+	  }`, jsonPath, extension)
 	case "F":
 		targetJSON = filepath.Join(targetDir, "com.tailscale.browserext.firefox.json")
 		jsonConf = fmt.Appendf(nil, `{
 		"name": "com.tailscale.browserext.firefox",
 		"description": "Tailscale Browser Extension",
-		"path": "%s",
+		"path": %s,
 		"type": "stdio",
 		"allowed_extensions": [
 			"browser-ext@tailscale.com"
 		]
-	  }`, targetBin)
+	  }`, jsonPath)
 	default:
 		return fmt.Errorf("unknown browser prefix byte %q", browserByte)
 	}
@@ -207,6 +221,16 @@ func install(installArg string) error {
 		return err
 	}
 	log.Printf("wrote registration to %v", targetJSON)
+
+	// Chrome on Windows requires a registry entry pointing at the manifest.
+	if runtime.GOOS == "windows" && browserByte == "C" {
+		const regKey = `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.tailscale.browserext.chrome`
+		cmd := exec.Command("reg", "add", regKey, "/ve", "/t", "REG_SZ", "/d", targetJSON, "/f")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("adding Chrome registry key: %w\n%s", err, out)
+		}
+		log.Printf("added registry key %s", regKey)
+	}
 	return nil
 }
 
@@ -439,10 +463,11 @@ func (h *host) send(msg *reply) error {
 	if len(msgb) > maxMsgSize {
 		return fmt.Errorf("message too big (%v)", len(msgb))
 	}
-	binary.LittleEndian.PutUint32(h.lenBuf[:], uint32(len(msgb)))
 	h.wmu.Lock()
 	defer h.wmu.Unlock()
-	if _, err := h.w.Write(h.lenBuf[:]); err != nil {
+	var lenBuf [4]byte
+	binary.LittleEndian.PutUint32(lenBuf[:], uint32(len(msgb)))
+	if _, err := h.w.Write(lenBuf[:]); err != nil {
 		return err
 	}
 	if _, err := h.w.Write(msgb); err != nil {

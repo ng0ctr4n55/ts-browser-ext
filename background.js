@@ -26,10 +26,9 @@ function enableProxy() {
   }
 
   if (lastProxyPort) {
-    nmPort.postMessage({ cmd: "get-status" });
-  } else {
-    nmPort.postMessage({ cmd: "up" });
+    setProxy(lastProxyPort);
   }
+  nmPort.postMessage({ cmd: "up" });
 }
 
 function disableProxy() {
@@ -45,8 +44,7 @@ function disableProxy() {
       deadPort
     );
   }
-  proxyEnabled = false;
-  lastProxyPort = 0;
+  setProxy(0);
   console.log(
     "Proxy disabled, proxyEnabled:",
     proxyEnabled,
@@ -129,6 +127,7 @@ function connectToNativeHost() {
 
   nmPort.onDisconnect.addListener(() => {
     deadPort = true;
+    lastProxyPort = 0;
     setPopupIcon("need-install");
     disableProxy();
     const error = chrome.runtime.lastError;
@@ -149,15 +148,15 @@ function connectToNativeHost() {
     if (message.procRunning) {
       if (message.procRunning.port) {
         setProxy(message.procRunning.port);
-      } else if (message.procRunning.errror) {
+      } else if (message.procRunning.error) {
         console.log(
-          "procRunning error from backend: " + message.procRunning.err
+          "procRunning error from backend: " + message.procRunning.error
         );
         disableProxy();
       }
     }
     if (message.init && message.init.error) {
-      console.log("init error from backend: " + message.init.err);
+      console.log("init error from backend: " + message.init.error);
       disableProxy();
     }
     if (message.status) {
@@ -255,7 +254,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       console.log("bg: Disabling proxy");
       disableProxy();
       console.log("bg: toggleProxy off, now proxy=" + proxyEnabled);
-      sendResponse({ status: "Disconnected" });
+      sendResponse({ status: { running: false } });
       console.log("bg: toggleProxy off, sent disconnected response");
     }
     setPopupIcon(proxyEnabled);

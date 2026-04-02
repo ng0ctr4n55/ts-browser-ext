@@ -21,10 +21,9 @@ function enableProxy() {
   }
 
   if (lastProxyPort) {
-    nmPort.postMessage({ cmd: "get-status" });
-  } else {
-    nmPort.postMessage({ cmd: "up" });
+    setProxy(lastProxyPort);
   }
+  nmPort.postMessage({ cmd: "up" });
 }
 
 function disableProxy() {
@@ -40,8 +39,7 @@ function disableProxy() {
       deadPort
     );
   }
-  proxyEnabled = false;
-  lastProxyPort = 0;
+  setProxy(0);
   console.log(
     "Proxy disabled, proxyEnabled:",
     proxyEnabled,
@@ -130,6 +128,7 @@ function connectToNativeHost() {
 
   nmPort.onDisconnect.addListener(() => {
     deadPort = true;
+    lastProxyPort = 0;
     setPopupIcon("need-install");
     disableProxy();
     const error = browser.runtime.lastError;
@@ -150,15 +149,15 @@ function connectToNativeHost() {
     if (message.procRunning) {
       if (message.procRunning.port) {
         setProxy(message.procRunning.port);
-      } else if (message.procRunning.errror) {
+      } else if (message.procRunning.error) {
         console.log(
-          "procRunning error from backend: " + message.procRunning.err
+          "procRunning error from backend: " + message.procRunning.error
         );
         disableProxy();
       }
     }
     if (message.init && message.init.error) {
-      console.log("init error from backend: " + message.init.err);
+      console.log("init error from backend: " + message.init.error);
       disableProxy();
     }
     if (message.status) {
@@ -173,7 +172,6 @@ var lastProxyPort = 0;
 var lastStatus = {}; // last Go status
 
 function setProxy(proxyPort) {
-  const handleProxyRequest = proxyHandler(proxyPort)
   if (proxyPort) {
     proxyEnabled = true;
     lastProxyPort = proxyPort;
@@ -181,7 +179,6 @@ function setProxy(proxyPort) {
   } else {
     proxyEnabled = false;
     console.log("Disabling proxy...");
-    browser.proxy.onRequest.removeListener(handleProxyRequest)
     browser.proxy.settings
       .set({
         value: {
@@ -194,26 +191,22 @@ function setProxy(proxyPort) {
       });
     return;
   }
-  browser.proxy.onRequest.addListener(handleProxyRequest, { urls: ["<all_urls>"] })
+  browser.proxy.settings
+    .set({
+      value: {
+        proxyType: "manual",
+        http: "127.0.0.1:" + proxyPort,
+        bypassList: ["<local>"],
+      },
+      scope: "regular",
+    })
+    .then(() => {
+      console.log("Proxy enabled: 127.0.0.1:" + proxyPort);
+    });
 }
 
 var profileID = "";
 var didInit = false;
-
-// firefox has unique behaviour where only socks proxies can handle domain resolution
-function proxyHandler(port) {
-  return function handleProxyRequest(requestInfo) {
-    const url = new URL(requestInfo.url)
-
-    // we need to use http for 100.100.100.100
-    if (url.hostname == '100.100.100.100') {
-      return { type: "http", host: "127.0.0.1", port: port };
-    }
-
-    // use socks for everything else
-    return { type: "socks", host: "127.0.0.1", port: port, proxyDNS: true, bypassList: ["localhost", "127.*"] };
-  }
-}
 
 function maybeSendInit() {
   if (!profileID || didInit || deadPort) {
@@ -251,6 +244,6 @@ browser.runtime.onMessage.addListener((message, sender) => {
       console.log("bg: Disabling proxy");
       disableProxy();
     }
-    return Promise.resolve({ status: lastStatus });
+    return Promise.resolve({ status: proxyEnabled ? lastStatus : { running: false } });
   }
 });

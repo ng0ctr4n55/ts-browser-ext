@@ -1,11 +1,3 @@
-var lastStatus;
-
-function browseToURL() {
-  if (lastStatus && lastStatus.browseToURL) {
-    chrome.tabs.create({ url: lastStatus.browseToURL });
-  }
-}
-
 document.addEventListener("DOMContentLoaded", () => {
   const toggleSlider = document.getElementById("toggleSlider");
   const slider = document.querySelector(".slider");
@@ -13,7 +5,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const stateDisplay = document.getElementById("state");
   let isConnected = false;
   let isLoading = true;
-  let hasReceivedInitialState = false;
 
   const port = chrome.runtime.connect({ name: "popup" });
 
@@ -23,17 +14,12 @@ document.addEventListener("DOMContentLoaded", () => {
       toggleSlider.checked = true; // Assume connected while loading
       return;
     }
-    // Only remove no-transition after we've received and applied the initial state
-    if (hasReceivedInitialState) {
-      slider.classList.remove("no-transition");
-    }
     slider.className = `slider ${isConnected ? "connected" : ""}`;
     toggleSlider.checked = isConnected;
   }
 
   function updateStatus(status) {
     isLoading = false;
-    hasReceivedInitialState = true;
     if (status.error) {
       if (status.error === "State: Stopped") {
         stateDisplay.textContent = "Disconnected";
@@ -42,16 +28,20 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
       stateDisplay.textContent = `Error: ${status.error}`;
+      isConnected = false;
+      updateSliderState();
       return;
     }
     if (status.needsLogin) {
-      stateDisplay.innerHTML = status.browseToURL
-        ? `<b><a href='#login'>Log in</a></b>`
-        : "<b>Login required; no URL</b>";
-      return;
-    }
-    if (typeof status === "string" && status === "Disconnected") {
-      stateDisplay.textContent = "Disconnected";
+      if (status.browseToURL) {
+        stateDisplay.innerHTML = `<b><a href="#">Log in</a></b>`;
+        stateDisplay.querySelector("a").addEventListener("click", (e) => {
+          e.preventDefault();
+          chrome.tabs.create({ url: status.browseToURL });
+        });
+      } else {
+        stateDisplay.innerHTML = "<b>Login required; no URL</b>";
+      }
       isConnected = false;
       updateSliderState();
       return;
