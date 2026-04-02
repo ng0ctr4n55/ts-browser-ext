@@ -67,3 +67,5 @@ To log out, for now you need to remove & re-add the extension.
 Don't use it yet. It's too rough. See status above.
 
 
+//chrome installation ts-browser-ext.exe --install=C<ext-name>
+//firefox installation ts-browser-ext.exe --install=F<ext-name>
